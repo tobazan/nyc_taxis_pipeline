@@ -82,7 +82,10 @@ case "$1" in
     fi
     exec airflow webserver
     # Create connection
-    # exec airflow connections add --conn_id 'postgres_test' --conn_uri 'postgres://test:postgres@postgres:5432/test'
+    exec airflow connections add airflow connections add 'spark-default' \
+                                                          --conn_id 'spark-default' \
+                                                          --conn-host 'spark://spark' \
+                                                          --conn-port '7077'
     ;;
   worker|scheduler)
     # To give the webserver time to run initdb.
