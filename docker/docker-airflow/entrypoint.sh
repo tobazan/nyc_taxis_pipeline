@@ -81,11 +81,6 @@ case "$1" in
       airflow scheduler &
     fi
     exec airflow webserver
-    # Create connection
-    exec airflow connections add airflow connections add 'spark-default' \
-                                                          --conn_id 'spark-default' \
-                                                          --conn-host 'spark://spark' \
-                                                          --conn-port '7077'
     ;;
   worker|scheduler)
     # To give the webserver time to run initdb.

@@ -1,12 +1,16 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
-from pyspark.sql.functions import col, lit, year, quarter
+from pyspark.sql.functions import col, lit, year, quarter, month
 from pyspark.sql.types import *
 
-import logging
+import logging, sys
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+postgres_db = sys.argv[1]
+postgres_user = sys.argv[2]
+postgres_pwd = sys.argv[3]
 
 yellow_schema = StructType([
                     StructField('VendorID', IntegerType(), True),
@@ -55,9 +59,10 @@ green_schema = StructType([
 
 if __name__ == "__main__":
     
-    conf = SparkConf()
-    conf.setMaster("local").setAppName("bronze_layer")
-    spark = SparkSession.builder.config(conf=conf).getOrCreate()
+    spark_conf = SparkConf().setMaster("local").setAppName("bronze_layer")
+    spark = SparkSession.builder \
+                .config(conf = spark_conf) \
+                .getOrCreate()
     
     try:
         green_df = spark.read.parquet('/tmp/green*.parquet', schema=green_schema)
@@ -111,12 +116,66 @@ if __name__ == "__main__":
             )
 
         taxis_df \
-            .withColumn("pickup_yr", year(col("pickup_ts"))) \
-            .withColumn("pickup_qt", quarter(col("pickup_ts"))) \
-            .filter("pickup_yr >= 2020") \
-            .filter("pickup_yr <= 2021") \
-            .write.partitionBy("pickup_qt") \
-            .saveAsTable("taxis_bronze", mode="overwrite")
+            .withColumn("pickup_year", year(col("pickup_ts"))) \
+            .withColumn("pickup_month", month(col("pickup_ts"))) \
+            .withColumn("pickup_quarter", quarter(col("pickup_ts"))) \
+            .filter("pickup_year >= 2020") \
+            .filter("pickup_year <= 2021") \
+            .createOrReplaceTempView("taxis_bronze")
 
     except Exception as e:
         logger.INFO("Error while trying to write unified bronze table", e)
+
+    #################### golda layer #####################################
+    try:
+        table01 = spark.sql("""
+            SELECT pickup_year, pickup_month, taxi_type,
+                    COUNT(*) AS trips_count
+            FROM taxis_bronze
+            GROUP BY 1,2,3
+        """)
+
+        table01.write \
+            .format("jdbc") \
+            .option("url", postgres_db) \
+            .option("dbtable", "gold.trips_per_month") \
+            .option("user", postgres_user) \
+            .option("password", postgres_pwd) \
+            .mode("overwrite") \
+            .save()
+
+        table02 = spark.sql("""
+            SELECT pickup_year, pickup_month, taxi_type,
+                    MAX(trip_distance) AS longest_trip
+            FROM taxis_bronze
+            GROUP BY 1,2,3
+        """)
+
+        table02.write \
+            .format("jdbc") \
+            .option("url", postgres_db) \
+            .option("dbtable", "gold.monthly_longest_trip") \
+            .option("user", postgres_user) \
+            .option("password", postgres_pwd) \
+            .mode("overwrite") \
+            .save()
+
+        table03 = spark.sql("""
+            SELECT pickup_location_id, pickup_year, pickup_month, 
+                    AVG(total_amount) AS avg_trip_cost
+            FROM taxis_bronze
+            GROUP BY 1,2,3
+            ORDER BY pickup_year, pickup_month, avg_trip_cost DESC
+        """)
+
+        table03.write \
+            .format("jdbc") \
+            .option("url", postgres_db) \
+            .option("dbtable", "gold.avg_cost_by_pickupLoc") \
+            .option("user", postgres_user) \
+            .option("password", postgres_pwd) \
+            .mode("overwrite") \
+            .save()
+
+    except Exception as e:
+        logger.INFO("Error while trying to write gold tables", e)
